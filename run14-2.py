@@ -243,15 +243,9 @@ with tf.device('GPU:0'):
     freq_bins = 512
     sample_len = 128
     l_input = Input(shape=(512, 128, 1))
-    l_out_1 = get_unet_mask(l_input, kernel_size=(7, 2))
-    l_out_2 = get_unet_mask(l_input, kernel_size=(2, 7))
-    concat_layer = concatenate([l_out_1, l_out_2])
-    mask_layer = Conv2D(1, (1, 1))(concat_layer)
+
+    mask_layer = get_unet_mask(l_input, kernel_size=(5, 5))
     final_layer = Multiply()([l_input, mask_layer])
-
-#     l_input = Input(shape=(None,))
-#     final_layer,mask_layer = get_unet_mask(l_input,kernel_size = (5,5))
-
 #     l_out_2= get_unet_mask(l_input,kernel_size = (2,5))
 
     #l_out_1_2= get_unet_mask(l_input,kernel_size = (5,2))
@@ -361,8 +355,8 @@ checkpoint_path = "../checkpoints/weights-improvement-{epoch:02d}-{val_loss:.3f}
 checkpoint = ModelCheckpoint(checkpoint_path, save_weights_only=True,
                              monitor='loss', verbose=1, mode='auto', period=1)
 log_dir = "../logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-early_callback = EarlyStopping(monitor='loss', min_delta=1e-4, patience=10,
-                               verbose=0, mode='auto', baseline=None, restore_best_weights=False)
+early_callback = EarlyStopping(monitor='loss', min_delta=1e-4, patience=4,
+                               verbose=1, mode='auto', baseline=None, restore_best_weights=False)
 tensorboard_callback = TensorBoard(
     log_dir=log_dir, histogram_freq=1, update_freq=15, profile_batch='200,300')
 
@@ -379,10 +373,10 @@ with tf.device('GPU:0'):
               'pitch_shift': 0.3,
               'time_stretch': 0.3}
     model.compile(loss=tf.keras.losses.mae, optimizer=Adam(
-        lr=3e-2, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0))
+        lr=1e-2, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0))
     #model.compile(loss=tf.keras.losses.mae, optimizer= SGD(lr=1e-2, decay=1e-7, momentum=0, nesterov=True))
 
-    model.load_weights('../checkpoints/weights-improvement-15-0.093_2.hdf5')
+    model.load_weights('../checkpoints/weights-improvement-47-0.089_2.hdf5')
 
     dataset_train, dataset_val = get_train_val()
     history = model.fit(x=dataset_train,

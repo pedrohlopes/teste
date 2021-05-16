@@ -29,6 +29,7 @@ from os import path
 import os
 import re
 import audiofile as af
+from functools import partial
 physical_devices = tf.config.list_physical_devices('GPU')
 # tf.compat.v1.disable_eager_execution()
 for i in range(len(physical_devices)):
@@ -130,101 +131,90 @@ def preprocess_audio_tf(x, y):
     return x, y
 
 
-def conv2d_block(input_tensor, n_filters, kernel_size=(5, 5), stride=1, batchnorm=False):
-    # first layer
-    x = Conv2D(filters=n_filters, kernel_size=kernel_size,
-               kernel_initializer='he_normal', padding='same', strides=(stride, stride))(input_tensor)
-    if batchnorm:
-        x = BatchNormalization()(x)
-    x = Activation(tf.nn.leaky_relu)(x)
+def get_unet_spleeter(input_tensor, kernel_size=(5, 5), strides=(2, 2)):
+    DROPOUT = 0
+    conv_activation_layer = LeakyReLU(0.2)
+    deconv_activation_layer = ReLU()
+    conv_n_filters = [16, 32, 64, 128, 256, 512]
+    kernel_initializer = 'he_normal'
+    conv2d_factory = partial(
+        Conv2D, strides=strides, padding="same", kernel_initializer=kernel_initializer
+    )
+    # First layer.
+    conv1 = conv2d_factory(conv_n_filters[0], kernel_size)(input_tensor)
+    batch1 = BatchNormalization(axis=-1)(conv1)
+    rel1 = conv_activation_layer(batch1)
+    # Second layer.
+    conv2 = conv2d_factory(conv_n_filters[1], kernel_size)(rel1)
+    batch2 = BatchNormalization(axis=-1)(conv2)
+    rel2 = conv_activation_layer(batch2)
+    # Third layer.
+    conv3 = conv2d_factory(conv_n_filters[2], kernel_size)(rel2)
+    batch3 = BatchNormalization(axis=-1)(conv3)
+    rel3 = conv_activation_layer(batch3)
+    # Fourth layer.
+    conv4 = conv2d_factory(conv_n_filters[3], kernel_size)(rel3)
+    batch4 = BatchNormalization(axis=-1)(conv4)
+    rel4 = conv_activation_layer(batch4)
+    # Fifth layer.
+    conv5 = conv2d_factory(conv_n_filters[4], kernel_size)(rel4)
+    batch5 = BatchNormalization(axis=-1)(conv5)
+    rel5 = conv_activation_layer(batch5)
+    # Sixth layer
+    conv6 = conv2d_factory(conv_n_filters[5], kernel_size)(rel5)
+    batch6 = BatchNormalization(axis=-1)(conv6)
+    _ = conv_activation_layer(batch6)
+    #
+    #
+    conv2d_transpose_factory = partial(
+        Conv2DTranspose,
+        strides=strides,
+        padding="same",
+        kernel_initializer=kernel_initializer,
+    )
+    #
+    up1 = conv2d_transpose_factory(conv_n_filters[4], kernel_size)((conv6))
+    up1 = deconv_activation_layer(up1)
+    batch7 = BatchNormalization(axis=-1)(up1)
+    drop1 = Dropout(DROPOUT)(batch7)
+    merge1 = Concatenate(axis=-1)([conv5, drop1])
+    #
+    up2 = conv2d_transpose_factory(conv_n_filters[3], kernel_size)((merge1))
+    up2 = deconv_activation_layer(up2)
+    batch8 = BatchNormalization(axis=-1)(up2)
+    drop2 = Dropout(DROPOUT)(batch8)
+    merge2 = Concatenate(axis=-1)([conv4, drop2])
+    #
+    up3 = conv2d_transpose_factory(conv_n_filters[2], kernel_size)((merge2))
+    up3 = deconv_activation_layer(up3)
+    batch9 = BatchNormalization(axis=-1)(up3)
+    drop3 = Dropout(DROPOUT)(batch9)
+    merge3 = Concatenate(axis=-1)([conv3, drop3])
+    #
+    up4 = conv2d_transpose_factory(conv_n_filters[1], kernel_size)((merge3))
+    up4 = deconv_activation_layer(up4)
+    batch10 = BatchNormalization(axis=-1)(up4)
+    merge4 = Concatenate(axis=-1)([conv2, batch10])
+    #
+    up5 = conv2d_transpose_factory(conv_n_filters[0], kernel_size)((merge4))
+    up5 = deconv_activation_layer(up5)
+    batch11 = BatchNormalization(axis=-1)(up5)
+    merge5 = Concatenate(axis=-1)([conv1, batch11])
+    #
+    up6 = conv2d_transpose_factory(1, kernel_size)((merge5))
+    up6 = deconv_activation_layer(up6)
+    batch12 = BatchNormalization(axis=-1)(up6)
+    # Last layer to ensure initial shape reconstruction.
 
-#     # second layer
-#     x = Conv2D(filters = n_filters, kernel_size = (kernel_size, kernel_size),\
-#               kernel_initializer = 'he_normal', padding = 'same')(input_tensor)
-#     if batchnorm:
-#         x = BatchNormalization()(x)
-#     x = Activation(tf.nn.leaky_relu)(x)
-
-    return x
-
-
-def conv2d_transpose_block(input_tensor, n_filters, kernel_size=(5, 5), strides=(2, 2), batchnorm=False):
-    x = Conv2DTranspose(n_filters, kernel_size=kernel_size,
-                        strides=strides, padding='same')(input_tensor)
-    if batchnorm:
-        x = BatchNormalization()(x)
-    x = Activation(tf.nn.relu)(x)
-
-    return x
-
-
-def get_unet_mask(input_img, n_filters=16, dropout=0.5, kernel_size=(5, 5), batchnorm=True):
-
-    # Contracting Path 1
-    c1 = conv2d_block(input_img, n_filters * 1,
-                      kernel_size=kernel_size, batchnorm=batchnorm, stride=2)
-    #c1 = MaxPooling2D((2, 2))(c1)
-    #c1 = Dropout(dropout)(c1)
-
-    c2 = conv2d_block(c1, n_filters * 2, kernel_size=kernel_size,
-                      batchnorm=batchnorm, stride=2)
-    #c2 = MaxPooling2D((2, 2))(c2)
-    #c2 = Dropout(dropout)(c2)
-
-    c3 = conv2d_block(c2, n_filters * 4, kernel_size=kernel_size,
-                      batchnorm=batchnorm, stride=2)
-    #c3 = MaxPooling2D((2, 2))(c3)
-    #c3 = Dropout(dropout)(c3)
-
-    c4 = conv2d_block(c3, n_filters * 8, kernel_size=kernel_size,
-                      batchnorm=batchnorm, stride=2)
-    #c4 = MaxPooling2D((2, 2))(c4)
-    #c4 = Dropout(dropout)(c4)
-
-    c5 = conv2d_block(c4, n_filters=n_filters * 16,
-                      kernel_size=kernel_size, batchnorm=batchnorm, stride=2)
-    #c5= MaxPooling2D((2, 2))(c5)
-    #c5 = Dropout(dropout)(c5)
-
-    c6 = conv2d_block(c5, n_filters=n_filters * 32,
-                      kernel_size=kernel_size, batchnorm=batchnorm, stride=2)
-
-    # Expansive Path 1
-    u3 = conv2d_transpose_block(c6, n_filters=n_filters * 16,
-                                kernel_size=kernel_size, strides=(2, 2), batchnorm=batchnorm)
-    u5 = concatenate([u3, c5])
-    u5 = Dropout(dropout)(u5)
-
-    u61 = conv2d_transpose_block(
-        u5, n_filters=n_filters * 8, kernel_size=kernel_size, strides=(2, 2), batchnorm=batchnorm)
-    u6 = concatenate([u61, c4])
-    u6 = Dropout(dropout)(u6)
-    #c6 = conv2d_block(u6, n_filters * 8, kernel_size = 5, batchnorm = batchnorm)
-
-    u71 = conv2d_transpose_block(
-        u6, n_filters=n_filters * 4, kernel_size=kernel_size, strides=(2, 2), batchnorm=batchnorm)
-    u7 = concatenate([u71, c3])
-    u7 = Dropout(dropout)(u7)
-    #c7 = conv2d_block(u7, n_filters * 4, kernel_size = 3, batchnorm = batchnorm)
-
-    u81 = conv2d_transpose_block(
-        u7, n_filters=n_filters * 2, kernel_size=kernel_size, strides=(2, 2), batchnorm=batchnorm)
-    u8 = concatenate([u81, c2])
-    #u8 = Dropout(dropout)(u8)
-    #c8 = conv2d_block(u8, n_filters * 2, kernel_size = 3, batchnorm = batchnorm)
-
-    u91 = conv2d_transpose_block(
-        u8, n_filters=n_filters * 1, kernel_size=kernel_size, strides=(2, 2), batchnorm=batchnorm)
-    u9 = concatenate([u91, c1])
-    #u9 = Dropout(dropout)(u9)
-    #c9 = conv2d_block(u9, n_filters * 1, kernel_size = 5, batchnorm = batchnorm, stride=2)
-    c9 = Conv2DTranspose(1, kernel_size=kernel_size, strides=(
-        2, 2), padding='same', activation='sigmoid')(u9)
-    #mask_layer = Conv2D(1, (1, 1), activation='sigmoid')(c9)
-    #l_out = Multiply()([l_input,mask_layer])
-    #model = Model(inputs=[input_img], outputs=[l_out,l_out_2])
-    return c9
-    # return mask_layer, l_out
+    up7 = Conv2D(
+        1,
+        (4, 4),
+        dilation_rate=(2, 2),
+        activation="sigmoid",
+        padding="same",
+        kernel_initializer=kernel_initializer,
+    )((batch12))
+    return up7
 
 
 def custom_loss(y_true, y_pred):
@@ -243,8 +233,8 @@ with tf.device('GPU:0'):
     freq_bins = 512
     sample_len = 128
     l_input = Input(shape=(512, 128, 1))
-    l_out_1 = get_unet_mask(l_input, kernel_size=(7, 2))
-    l_out_2 = get_unet_mask(l_input, kernel_size=(2, 7))
+    l_out_1 = get_unet_spleeter(l_input, kernel_size=(7, 3))
+    l_out_2 = get_unet_spleeter(l_input, kernel_size=(3, 7))
     concat_layer = concatenate([l_out_1, l_out_2])
     mask_layer = Conv2D(1, (1, 1))(concat_layer)
     final_layer = Multiply()([l_input, mask_layer])
@@ -357,7 +347,7 @@ def get_train_val():
     return dataset_train, dataset_val
 
 
-checkpoint_path = "../checkpoints/weights-improvement-{epoch:02d}-{val_loss:.3f}_2.hdf5"
+checkpoint_path = "../checkpoints/ws-3-7-splt-{epoch:02d}-{val_loss:.3f}_2.hdf5"
 checkpoint = ModelCheckpoint(checkpoint_path, save_weights_only=True,
                              monitor='loss', verbose=1, mode='auto', period=1)
 log_dir = "../logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -382,7 +372,7 @@ with tf.device('GPU:0'):
         lr=3e-2, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0))
     #model.compile(loss=tf.keras.losses.mae, optimizer= SGD(lr=1e-2, decay=1e-7, momentum=0, nesterov=True))
 
-    model.load_weights('../checkpoints/weights-improvement-15-0.093_2.hdf5')
+    # model.load_weights('../checkpoints/weights-improvement-15-0.093_2.hdf5')
 
     dataset_train, dataset_val = get_train_val()
     history = model.fit(x=dataset_train,
